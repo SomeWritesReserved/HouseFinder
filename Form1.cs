@@ -41,10 +41,10 @@ namespace HouseFinderUI
 
 		private void dumpDebugButton_Click(object sender, EventArgs e)
 		{
-			var documentAsIHtmlDocument3 = (mshtml.IHTMLDocument3)this.webBrowser1.Document.DomDocument;
+			/*var documentAsIHtmlDocument3 = (mshtml.IHTMLDocument3)this.webBrowser1.Document.DomDocument;
 			var content = documentAsIHtmlDocument3.documentElement.innerHTML;
 
-			File.WriteAllText("test.html", content);
+			File.WriteAllText("test.html", content);*/
 		}
 
 
@@ -77,9 +77,9 @@ namespace HouseFinderUI
 
 					this.Invoke(new Action(() =>
 					{
-						var documentAsIHtmlDocument3 = (mshtml.IHTMLDocument3)this.webBrowser1.Document.DomDocument;
-						var content = documentAsIHtmlDocument3.documentElement.innerHTML;
-						File.WriteAllText(Path.Combine("obx", this.currentHouse.Replace("/property/", string.Empty)) + ".html", content);
+						//var documentAsIHtmlDocument3 = (mshtml.IHTMLDocument3)this.webBrowser1.Document.DomDocument;
+						//var content = documentAsIHtmlDocument3.documentElement.innerHTML;
+						//File.WriteAllText(Path.Combine("obx", this.currentHouse.Replace("/property/", string.Empty)) + ".html", content);
 					}));
 					this.houseCompletedCount++;
 				}
@@ -143,6 +143,7 @@ namespace HouseFinderUI
 				if (summary.Contains("Condo")) { continue; }
 
 				Rental rental = new Rental();
+				rental.Url = "https://www.outerbeaches.com/property/" + Path.GetFileNameWithoutExtension(houseFile);
 				rental.Name = name;
 				rental.Bedrooms = int.Parse(Regex.Match(summary, @"(\d+) [bB]edroom").Groups[1].Value);
 				rental.Town = Regex.Match(summary, @"in (.+)").Groups[1].Value;
@@ -177,7 +178,7 @@ namespace HouseFinderUI
 			//================================
 			rentals = rentals
 				.Where((r) => r.RentalType == RentalType.Oceanfront || r.RentalType == RentalType.SemiOceanfront || r.RentalType == RentalType.Oceanside)
-				//.Where((r) => r.Bedrooms == 4 || r.Bedrooms == 5)
+				.Where((r) => r.Bedrooms >= 4)
 				//.Where((r) => r.HasPool)
 				//.Where((r) => r.PricePerBedroom < 810)
 				.Where((r) => r.DatePrice > 0)
@@ -214,13 +215,113 @@ namespace HouseFinderUI
 					});
 				}
 				rentalA.ClosestRental = closestRental;
-				rentalA.DistanceTo = closestDistance;
+				rentalA.ClosestRentalDistance = closestDistance;
 			}
 
+			Clipboard.SetText(string.Join(Environment.NewLine, rentals.OrderBy((r) => r.ClosestRentalDistance).Select((r) => $"{r.Name}\t{r.Town}\t{r.RentalType}\t{r.Bedrooms}\t{r.HasPool}\t{r.DatePrice}\t{r.PricePerBedroom}\t{r.ClosestRental.Name}\t{r.ClosestRentalDistance}\t{r.CoordinateX}\t{r.CoordinateY}\t{r.Url}")));
 
 			this.Text = rentals.Count.ToString();
 			this.dataGridView1.DataSource = rentals
-				.OrderBy((r) => r.DistanceTo)
+				.OrderBy((r) => r.ClosestRentalDistance)
+				//.OrderBy((r) => r.Town)
+				//.ThenBy((r) => r.PricePerBedroom)
+				.ToList();
+
+			this.dataGridView2.DataSource = betweenDistances
+				.OrderBy((d) => d.DistanceBetween)
+				.Where((d) => d.DistanceBetween < 1320)
+				.ToList();
+		}
+
+		private void parseSbButton_Click(object sender, EventArgs e)
+		{
+			// Step 2: Parse scraped houses for information
+			List<Rental> rentals = new List<Rental>();
+			foreach (string houseFile in Directory.GetFiles("sb"))
+			{
+				string houseText = File.ReadAllText(houseFile);
+
+				Rental rental = new Rental();
+				rental.Url = "https://www.sandbridge.com/rental/house/" + Path.GetFileNameWithoutExtension(houseFile);
+				rental.Name = Regex.Match(houseText, "<title>(.+)</title>").Groups[1].Value.Split('|')[0].Trim();
+				rental.Bedrooms = int.Parse(Regex.Match(houseText, @"<li><strong>Bedrooms:</strong> (\d+)</li>").Groups[1].Value);
+				rental.Town = "Sandbridge";
+				rental.RentalType = (RentalType)Enum.Parse(typeof(RentalType), Regex.Match(houseText, @">(.+) -  Rental Property").Groups[1].Value.Trim().Replace(" ", "").Replace("-", "").Replace("Bay/Canal", "Canalfront"), true);
+				rental.HasPool = houseText.Contains("Pool Season");
+
+				var coordinateMatch = Regex.Match(houseText, @"lat=(-?\d+\.\d+)&lng=(-?\d+\.\d+)");
+				rental.CoordinateX = coordinateMatch.Groups[1].Value;
+				rental.CoordinateY = coordinateMatch.Groups[2].Value;
+
+				var priceTableText = Regex.Match(houseText.Replace("\r", "").Replace("\n", ""), "<tbody>.+?</tbody>").Value;
+				XmlDocument priceTableXmlDoc = new XmlDocument();
+				priceTableXmlDoc.LoadXml(priceTableText);
+				foreach (XmlNode weekNode in priceTableXmlDoc.FirstChild.SelectNodes("tr"))
+				{
+					DateTime startDate = DateTime.Parse(weekNode.ChildNodes[0].InnerText);
+					string priceString = weekNode.ChildNodes[3].InnerText.Trim();
+					if (priceString == "N/A") { continue; }
+					int price = (int)double.Parse(priceString.Replace("$", "").Replace(",", ""));
+
+					rental.WeekPrices.Add(new WeekPrice()
+					{
+						StartDate = startDate,
+						Price = price,
+					});
+				}
+
+				rentals.Add(rental);
+			}
+
+			//================================
+			// filter
+			//================================
+			rentals = rentals
+				.Where((r) => r.RentalType == RentalType.Oceanfront || r.RentalType == RentalType.SemiOceanfront || r.RentalType == RentalType.Oceanside || r.RentalType == RentalType.Waterview3rdRow || r.RentalType == RentalType.Waterview4thRow)
+				.Where((r) => r.Bedrooms >= 4)
+				//.Where((r) => r.HasPool)
+				//.Where((r) => r.PricePerBedroom < 810)
+				.Where((r) => r.DatePrice > 0)
+				.ToList();
+
+			//================================
+			// calc distances
+			//================================
+			List<BetweenDistance> betweenDistances = new List<BetweenDistance>();
+			foreach (Rental rentalA in rentals)
+			{
+				Rental closestRental = null;
+				double closestDistance = double.MaxValue;
+				foreach (Rental rentalB in rentals)
+				{
+					if (rentalA == rentalB) { continue; }
+
+					GeoCoordinate coordinateA = new GeoCoordinate(double.Parse(rentalA.CoordinateX), double.Parse(rentalA.CoordinateY));
+					GeoCoordinate coordinateB = new GeoCoordinate(double.Parse(rentalB.CoordinateX), double.Parse(rentalB.CoordinateY));
+					double distanceBetween = Math.Round(coordinateA.GetDistanceTo(coordinateB) * 3.28084);
+
+					if (distanceBetween < closestDistance)
+					{
+						closestRental = rentalB;
+						closestDistance = distanceBetween;
+					}
+
+					betweenDistances.Add(new BetweenDistance()
+					{
+						DistanceBetween = distanceBetween,
+						RentalA = rentalA,
+						RentalB = rentalB,
+					});
+				}
+				rentalA.ClosestRental = closestRental;
+				rentalA.ClosestRentalDistance = closestDistance;
+			}
+
+			Clipboard.SetText(string.Join(Environment.NewLine, rentals.OrderBy((r) => r.ClosestRentalDistance).Select((r) => $"{r.Name}\t{r.Town}\t{r.RentalType}\t{r.Bedrooms}\t{r.HasPool}\t{r.DatePrice}\t{r.PricePerBedroom}\t{r.ClosestRental.Name}\t{r.ClosestRentalDistance}\t{r.CoordinateX}\t{r.CoordinateY}\t{r.Url}")));
+
+			this.Text = rentals.Count.ToString();
+			this.dataGridView1.DataSource = rentals
+				.OrderBy((r) => r.ClosestRentalDistance)
 				//.OrderBy((r) => r.Town)
 				//.ThenBy((r) => r.PricePerBedroom)
 				.ToList();
@@ -263,10 +364,12 @@ namespace HouseFinderUI
 		}
 
 		public Rental ClosestRental { get; set; }
-		public double DistanceTo { get; set; }
+		public double ClosestRentalDistance { get; set; }
 
 		public string CoordinateX { get; set; }
 		public string CoordinateY { get; set; }
+
+		public string Url { get; set; }
 
 
 		public override string ToString()
@@ -301,5 +404,9 @@ namespace HouseFinderUI
 		Soundside,
 
 		Canalfront,
+
+		// SB
+		Waterview3rdRow,
+		Waterview4thRow,
 	}
 }
